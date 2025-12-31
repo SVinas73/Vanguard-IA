@@ -22,12 +22,13 @@ app.add_middleware(
 )
 
 # Importar routers después de crear app
-from routers import predictions, anomalies, associations
+from routers import predictions, anomalies, associations, training
 
 # Incluir routers
 app.include_router(predictions.router, prefix="/api/predictions", tags=["Predicciones"])
 app.include_router(anomalies.router, prefix="/api/anomalies", tags=["Anomalías"])
 app.include_router(associations.router, prefix="/api/associations", tags=["Asociaciones"])
+app.include_router(training.router, prefix="/api/training", tags=["Entrenamiento"])
 
 @app.get("/")
 def root():
