@@ -5,15 +5,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# ML/DL imports
+# ML imports
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
 import xgboost as xgb
-
-# TensorFlow para LSTM
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 import sys
 sys.path.append('..')
@@ -34,27 +30,27 @@ class DemandPredictionRequest(BaseModel):
     dias_futuro: Optional[int] = 7
 
 # ============================================
-# LSTM - Predicción de agotamiento
+# HOLT-WINTERS - Predicción de agotamiento (reemplaza LSTM)
 # ============================================
 
-def prepare_lstm_data(movements_df, lookback=7):
-    """Preparar datos para LSTM"""
+def prepare_time_series(movements_df):
+    """Preparar serie temporal para Holt-Winters"""
     if movements_df.empty:
-        return None, None, None
+        return None
     
     # Agrupar por día y sumar salidas
     daily = movements_df[movements_df['tipo'] == 'salida'].copy()
     if daily.empty:
-        return None, None, None
+        return None
     
     daily['date'] = daily['created_at'].dt.date
     daily_consumption = daily.groupby('date')['cantidad'].sum().reset_index()
     daily_consumption.columns = ['date', 'consumption']
     
-    # Crear serie temporal completa (rellenar días sin movimientos)
-    if len(daily_consumption) < lookback + 1:
-        return None, None, None
+    if len(daily_consumption) < 7:
+        return None
     
+    # Crear serie temporal completa (rellenar días sin movimientos)
     date_range = pd.date_range(
         start=daily_consumption['date'].min(),
         end=daily_consumption['date'].max(),
@@ -66,38 +62,12 @@ def prepare_lstm_data(movements_df, lookback=7):
     full_series = full_series.merge(daily_consumption, on='date', how='left')
     full_series['consumption'] = full_series['consumption'].fillna(0)
     
-    # Normalizar
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(full_series['consumption'].values.reshape(-1, 1))
-    
-    # Crear secuencias
-    X, y = [], []
-    for i in range(lookback, len(scaled_data)):
-        X.append(scaled_data[i-lookback:i, 0])
-        y.append(scaled_data[i, 0])
-    
-    X, y = np.array(X), np.array(y)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
-    
-    return X, y, scaler
-
-def build_lstm_model(lookback=7):
-    """Construir modelo LSTM"""
-    model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=(lookback, 1)),
-        Dropout(0.2),
-        LSTM(50, return_sequences=False),
-        Dropout(0.2),
-        Dense(25),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
+    return full_series['consumption'].values
 
 @router.post("/stock-depletion/{codigo}")
 async def predict_stock_depletion(codigo: str, dias_futuro: int = 30):
     """
-    LSTM: Predice cuándo se va a agotar un producto
+    Holt-Winters: Predice cuándo se va a agotar un producto
     """
     try:
         # Obtener datos
@@ -110,9 +80,15 @@ async def predict_stock_depletion(codigo: str, dias_futuro: int = 30):
         current_stock = int(product['stock'].values[0])
         movements = get_product_movements(codigo)
         
-        if movements.empty or len(movements[movements['tipo'] == 'salida']) < 14:
+        if movements.empty or len(movements[movements['tipo'] == 'salida']) < 7:
             # No hay suficientes datos, usar promedio simple
-            avg_daily = movements[movements['tipo'] == 'salida']['cantidad'].sum() / max(1, len(movements))
+            salidas = movements[movements['tipo'] == 'salida']
+            if not salidas.empty:
+                days_span = (salidas['created_at'].max() - salidas['created_at'].min()).days or 1
+                avg_daily = salidas['cantidad'].sum() / days_span
+            else:
+                avg_daily = 0
+                
             if avg_daily > 0:
                 days_until_depletion = int(current_stock / avg_daily)
             else:
@@ -128,31 +104,43 @@ async def predict_stock_depletion(codigo: str, dias_futuro: int = 30):
                 "mensaje": "Pocos datos históricos, usando promedio simple"
             }
         
-        # Preparar datos para LSTM
-        X, y, scaler = prepare_lstm_data(movements)
+        # Preparar serie temporal
+        time_series = prepare_time_series(movements)
         
-        if X is None or len(X) < 10:
-            raise HTTPException(status_code=400, detail="Datos insuficientes para LSTM")
+        if time_series is None or len(time_series) < 14:
+            # Fallback a promedio
+            salidas = movements[movements['tipo'] == 'salida']
+            days_span = (salidas['created_at'].max() - salidas['created_at'].min()).days or 1
+            avg_daily = salidas['cantidad'].sum() / days_span
+            days_until_depletion = int(current_stock / avg_daily) if avg_daily > 0 else None
+            
+            return {
+                "codigo": codigo,
+                "stock_actual": current_stock,
+                "dias_hasta_agotamiento": days_until_depletion,
+                "fecha_estimada_agotamiento": (datetime.now() + timedelta(days=days_until_depletion)).isoformat() if days_until_depletion else None,
+                "modelo": "promedio_simple",
+                "confianza": 0.6
+            }
         
-        # Entrenar modelo
-        model = build_lstm_model()
-        model.fit(X, y, epochs=50, batch_size=16, verbose=0)
-        
-        # Predecir consumo futuro
-        last_sequence = X[-1].reshape(1, 7, 1)
-        future_consumption = []
-        
-        for _ in range(dias_futuro):
-            pred = model.predict(last_sequence, verbose=0)
-            future_consumption.append(pred[0, 0])
-            # Actualizar secuencia
-            last_sequence = np.roll(last_sequence, -1, axis=1)
-            last_sequence[0, -1, 0] = pred[0, 0]
-        
-        # Desnormalizar predicciones
-        future_consumption = scaler.inverse_transform(
-            np.array(future_consumption).reshape(-1, 1)
-        ).flatten()
+        # Aplicar Holt-Winters
+        try:
+            model = ExponentialSmoothing(
+                time_series,
+                trend='add',
+                seasonal=None,  # Sin estacionalidad si hay pocos datos
+                initialization_method='estimated'
+            )
+            fitted_model = model.fit()
+            
+            # Predecir consumo futuro
+            future_consumption = fitted_model.forecast(dias_futuro)
+            future_consumption = np.maximum(future_consumption, 0)  # No puede ser negativo
+            
+        except Exception:
+            # Si falla Holt-Winters, usar promedio móvil
+            avg_daily = np.mean(time_series[-14:])
+            future_consumption = np.full(dias_futuro, avg_daily)
         
         # Calcular días hasta agotamiento
         cumulative_consumption = np.cumsum(future_consumption)
@@ -163,8 +151,7 @@ async def predict_stock_depletion(codigo: str, dias_futuro: int = 30):
                 days_until_depletion = i + 1
                 break
         
-        if days_until_depletion is None and cumulative_consumption[-1] < current_stock:
-            # El stock dura más de los días predichos
+        if days_until_depletion is None and len(cumulative_consumption) > 0:
             avg_daily = np.mean(future_consumption)
             if avg_daily > 0:
                 days_until_depletion = int(current_stock / avg_daily)
@@ -176,8 +163,8 @@ async def predict_stock_depletion(codigo: str, dias_futuro: int = 30):
             "fecha_estimada_agotamiento": (datetime.now() + timedelta(days=days_until_depletion)).isoformat() if days_until_depletion else None,
             "consumo_diario_predicho": float(np.mean(future_consumption)),
             "prediccion_proximos_dias": [float(x) for x in future_consumption[:7]],
-            "modelo": "LSTM",
-            "confianza": 0.85
+            "modelo": "Holt-Winters",
+            "confianza": 0.80
         }
         
     except HTTPException:
