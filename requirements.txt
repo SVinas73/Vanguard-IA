@@ -8,3 +8,4 @@ mlxtend
 supabase
 python-dotenv
 statsmodels
+google-generativeai
