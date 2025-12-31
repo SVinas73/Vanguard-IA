@@ -4,7 +4,7 @@ pandas
 numpy
 scikit-learn
 xgboost
-tensorflow
+tensorflow-cpu
 mlxtend
 supabase
 python-dotenv
