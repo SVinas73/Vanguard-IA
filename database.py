@@ -13,7 +13,20 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_products():
     """Obtener todos los productos"""
     response = supabase.table("productos").select("*").execute()
-    return pd.DataFrame(response.data)
+    df = pd.DataFrame(response.data)
+    
+    # Renombrar columnas si es necesario
+    if 'stock_minimo' in df.columns and 'stockMinimo' not in df.columns:
+        df = df.rename(columns={'stock_minimo': 'stockMinimo'})
+    
+    # Asegurar que existen las columnas necesarias
+    if not df.empty:
+        if 'stock' not in df.columns:
+            df['stock'] = 0
+        if 'stockMinimo' not in df.columns and 'stock_minimo' not in df.columns:
+            df['stockMinimo'] = 5
+            
+    return df
 
 def get_movements():
     """Obtener todos los movimientos"""

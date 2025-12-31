@@ -31,58 +31,111 @@ class ChatResponse(BaseModel):
     suggestions: list = []
 
 # ============================================
+# FUNCIONES AUXILIARES
+# ============================================
+
+def get_stock_minimo_col(df: pd.DataFrame) -> str:
+    """Determina el nombre de la columna de stock mínimo"""
+    if 'stock_minimo' in df.columns:
+        return 'stock_minimo'
+    elif 'stockMinimo' in df.columns:
+        return 'stockMinimo'
+    else:
+        return 'stock_minimo'
+
+def safe_get(row, col, default=0):
+    """Obtiene un valor de forma segura"""
+    try:
+        return row[col] if col in row.index else default
+    except:
+        return default
+
+# ============================================
 # FUNCIONES DE ANÁLISIS
 # ============================================
 
 def get_inventory_context(products_df: pd.DataFrame, movements_df: pd.DataFrame) -> str:
     """Genera contexto del inventario para Gemini"""
     
+    if products_df.empty:
+        return "No hay productos en el inventario."
+    
+    # Determinar nombre de columna stock mínimo
+    stock_min_col = get_stock_minimo_col(products_df)
+    
     # Resumen general
     total_productos = len(products_df)
-    total_items = products_df['stock'].sum()
-    valor_total = (products_df['precio'] * products_df['stock']).sum()
+    total_items = products_df['stock'].sum() if 'stock' in products_df.columns else 0
+    
+    # Calcular valor total
+    if 'precio' in products_df.columns and 'stock' in products_df.columns:
+        valor_total = (products_df['precio'] * products_df['stock']).sum()
+    else:
+        valor_total = 0
     
     # Stock bajo
-    stock_bajo = products_df[products_df['stock'] <= products_df['stock_minimo']]
-    sin_stock = products_df[products_df['stock'] == 0]
+    if stock_min_col in products_df.columns and 'stock' in products_df.columns:
+        stock_bajo = products_df[products_df['stock'] <= products_df[stock_min_col]]
+        sin_stock = products_df[products_df['stock'] == 0]
+    else:
+        stock_bajo = pd.DataFrame()
+        sin_stock = pd.DataFrame()
     
     # Movimientos recientes
     now = datetime.now()
     week_ago = now - timedelta(days=7)
     month_ago = now - timedelta(days=30)
     
-    mov_semana = movements_df[movements_df['created_at'] >= week_ago] if not movements_df.empty else pd.DataFrame()
-    mov_mes = movements_df[movements_df['created_at'] >= month_ago] if not movements_df.empty else pd.DataFrame()
-    
-    salidas_semana = mov_semana[mov_semana['tipo'] == 'salida']['cantidad'].sum() if not mov_semana.empty else 0
-    salidas_mes = mov_mes[mov_mes['tipo'] == 'salida']['cantidad'].sum() if not mov_mes.empty else 0
+    if not movements_df.empty and 'created_at' in movements_df.columns:
+        mov_semana = movements_df[movements_df['created_at'] >= week_ago]
+        mov_mes = movements_df[movements_df['created_at'] >= month_ago]
+        
+        salidas_semana = mov_semana[mov_semana['tipo'] == 'salida']['cantidad'].sum() if not mov_semana.empty else 0
+        salidas_mes = mov_mes[mov_mes['tipo'] == 'salida']['cantidad'].sum() if not mov_mes.empty else 0
+    else:
+        mov_semana = pd.DataFrame()
+        mov_mes = pd.DataFrame()
+        salidas_semana = 0
+        salidas_mes = 0
     
     # Top productos
+    top_list = []
     if not mov_mes.empty:
-        top_productos = mov_mes[mov_mes['tipo'] == 'salida'].groupby('codigo')['cantidad'].sum().sort_values(ascending=False).head(5)
-        top_list = []
-        for codigo, cantidad in top_productos.items():
-            prod = products_df[products_df['codigo'] == codigo]
-            if not prod.empty:
-                top_list.append(f"- {codigo}: {prod.iloc[0]['descripcion']} ({int(cantidad)} unidades)")
-    else:
+        salidas_mes_df = mov_mes[mov_mes['tipo'] == 'salida']
+        if not salidas_mes_df.empty:
+            top_productos = salidas_mes_df.groupby('codigo')['cantidad'].sum().sort_values(ascending=False).head(5)
+            for codigo, cantidad in top_productos.items():
+                prod = products_df[products_df['codigo'] == codigo]
+                if not prod.empty:
+                    top_list.append(f"- {codigo}: {prod.iloc[0]['descripcion']} ({int(cantidad)} unidades)")
+    
+    if not top_list:
         top_list = ["No hay datos de ventas"]
     
     # Productos con stock bajo detallado
     stock_bajo_list = []
     for _, p in stock_bajo.head(10).iterrows():
+        codigo = p['codigo']
+        descripcion = p.get('descripcion', codigo)
+        stock = int(p.get('stock', 0))
+        stock_min = int(safe_get(p, stock_min_col, 5))
+        
         # Calcular días restantes
-        salidas_prod = movements_df[(movements_df['codigo'] == p['codigo']) & (movements_df['tipo'] == 'salida')]
-        if not salidas_prod.empty:
-            dias = (salidas_prod['created_at'].max() - salidas_prod['created_at'].min()).days or 1
-            consumo_diario = salidas_prod['cantidad'].sum() / dias
-            dias_restantes = p['stock'] / consumo_diario if consumo_diario > 0 else 999
+        if not movements_df.empty:
+            salidas_prod = movements_df[(movements_df['codigo'] == codigo) & (movements_df['tipo'] == 'salida')]
+            if not salidas_prod.empty and 'created_at' in salidas_prod.columns:
+                dias = (salidas_prod['created_at'].max() - salidas_prod['created_at'].min()).days or 1
+                consumo_diario = salidas_prod['cantidad'].sum() / dias
+                dias_restantes = stock / consumo_diario if consumo_diario > 0 else 999
+            else:
+                consumo_diario = 0
+                dias_restantes = 999
         else:
             consumo_diario = 0
             dias_restantes = 999
         
         stock_bajo_list.append(
-            f"- {p['codigo']}: {p['descripcion']} | Stock: {int(p['stock'])}/{int(p['stock_minimo'])} | "
+            f"- {codigo}: {descripcion} | Stock: {stock}/{stock_min} | "
             f"Consumo: {consumo_diario:.1f}/día | Días restantes: {dias_restantes:.0f}"
         )
     
@@ -111,7 +164,12 @@ LISTA COMPLETA DE PRODUCTOS:
     
     # Agregar lista de productos
     for _, p in products_df.iterrows():
-        context += f"- {p['codigo']}: {p['descripcion']} | Stock: {int(p['stock'])} | Mínimo: {int(p['stock_minimo'])} | Precio: ${p['precio']:.2f}\n"
+        codigo = p.get('codigo', 'N/A')
+        descripcion = p.get('descripcion', 'N/A')
+        stock = int(p.get('stock', 0))
+        stock_min = int(safe_get(p, stock_min_col, 5))
+        precio = float(p.get('precio', 0))
+        context += f"- {codigo}: {descripcion} | Stock: {stock} | Mínimo: {stock_min} | Precio: ${precio:.2f}\n"
     
     return context
 
@@ -119,43 +177,64 @@ LISTA COMPLETA DE PRODUCTOS:
 def get_product_detail(codigo: str, products_df: pd.DataFrame, movements_df: pd.DataFrame) -> Optional[str]:
     """Obtiene detalle de un producto específico"""
     
+    if products_df.empty:
+        return None
+    
+    # Determinar nombre de columna stock mínimo
+    stock_min_col = get_stock_minimo_col(products_df)
+    
     # Buscar por código
     product = products_df[products_df['codigo'].str.upper() == codigo.upper()]
     
     # Si no encuentra, buscar por descripción
     if product.empty:
-        product = products_df[products_df['descripcion'].str.upper().str.contains(codigo.upper())]
+        product = products_df[products_df['descripcion'].str.upper().str.contains(codigo.upper(), na=False)]
     
     if product.empty:
         return None
     
     p = product.iloc[0]
     
-    # Calcular estadísticas
-    salidas = movements_df[(movements_df['codigo'] == p['codigo']) & (movements_df['tipo'] == 'salida')]
-    entradas = movements_df[(movements_df['codigo'] == p['codigo']) & (movements_df['tipo'] == 'entrada')]
+    codigo = p.get('codigo', 'N/A')
+    descripcion = p.get('descripcion', 'N/A')
+    categoria = p.get('categoria', 'N/A')
+    stock = int(p.get('stock', 0))
+    stock_min = int(safe_get(p, stock_min_col, 5))
+    precio = float(p.get('precio', 0))
     
-    if not salidas.empty:
-        dias = (salidas['created_at'].max() - salidas['created_at'].min()).days or 1
-        consumo_diario = salidas['cantidad'].sum() / dias
-        dias_restantes = p['stock'] / consumo_diario if consumo_diario > 0 else float('inf')
-        total_vendido = salidas['cantidad'].sum()
+    # Calcular estadísticas
+    if not movements_df.empty:
+        salidas = movements_df[(movements_df['codigo'] == codigo) & (movements_df['tipo'] == 'salida')]
+        entradas = movements_df[(movements_df['codigo'] == codigo) & (movements_df['tipo'] == 'entrada')]
+        
+        if not salidas.empty and 'created_at' in salidas.columns:
+            dias = (salidas['created_at'].max() - salidas['created_at'].min()).days or 1
+            consumo_diario = salidas['cantidad'].sum() / dias
+            dias_restantes = stock / consumo_diario if consumo_diario > 0 else float('inf')
+            total_vendido = salidas['cantidad'].sum()
+        else:
+            consumo_diario = 0
+            dias_restantes = float('inf')
+            total_vendido = 0
+        
+        total_entradas = entradas['cantidad'].sum() if not entradas.empty else 0
     else:
         consumo_diario = 0
         dias_restantes = float('inf')
         total_vendido = 0
+        total_entradas = 0
     
     detail = f"""
-DETALLE DEL PRODUCTO {p['codigo']}:
-- Descripción: {p['descripcion']}
-- Categoría: {p['categoria']}
-- Stock actual: {int(p['stock'])} unidades
-- Stock mínimo: {int(p['stock_minimo'])} unidades
-- Precio de venta: ${p['precio']:.2f} UYU
+DETALLE DEL PRODUCTO {codigo}:
+- Descripción: {descripcion}
+- Categoría: {categoria}
+- Stock actual: {stock} unidades
+- Stock mínimo: {stock_min} unidades
+- Precio de venta: ${precio:.2f} UYU
 - Consumo promedio diario: {consumo_diario:.2f} unidades/día
 - Días estimados hasta agotamiento: {dias_restantes:.0f if dias_restantes != float('inf') else 'Indefinido (sin consumo)'}
 - Total vendido histórico: {int(total_vendido)} unidades
-- Total entradas histórico: {int(entradas['cantidad'].sum()) if not entradas.empty else 0} unidades
+- Total entradas histórico: {int(total_entradas)} unidades
 """
     return detail
 
@@ -181,10 +260,13 @@ async def chat(message: ChatMessage):
         
         # Detectar si pregunta por un producto específico
         product_detail = None
-        for _, p in products.iterrows():
-            if p['codigo'].lower() in message.message.lower() or p['descripcion'].lower() in message.message.lower():
-                product_detail = get_product_detail(p['codigo'], products, movements)
-                break
+        if not products.empty:
+            for _, p in products.iterrows():
+                codigo = str(p.get('codigo', '')).lower()
+                descripcion = str(p.get('descripcion', '')).lower()
+                if codigo in message.message.lower() or descripcion in message.message.lower():
+                    product_detail = get_product_detail(p['codigo'], products, movements)
+                    break
         
         # Construir prompt para Gemini
         system_prompt = f"""Eres un asistente de inventario inteligente llamado "Vanguard AI". 
@@ -216,12 +298,15 @@ REGLAS:
         
         # Generar sugerencias contextuales
         suggestions = []
-        if 'stock bajo' in message.message.lower() or 'crítico' in message.message.lower():
-            suggestions = ["¿Cuánto debo pedir de cada uno?", "¿Cuáles son los más urgentes?", "Generar lista de compras"]
-        elif any(p['codigo'].lower() in message.message.lower() for _, p in products.iterrows()):
-            suggestions = ["¿Qué otros productos tienen stock bajo?", "¿Cuánto vendí esta semana?", "Ver productos relacionados"]
+        if not products.empty:
+            if 'stock bajo' in message.message.lower() or 'crítico' in message.message.lower():
+                suggestions = ["¿Cuánto debo pedir de cada uno?", "¿Cuáles son los más urgentes?", "Generar lista de compras"]
+            elif any(str(p.get('codigo', '')).lower() in message.message.lower() for _, p in products.iterrows()):
+                suggestions = ["¿Qué otros productos tienen stock bajo?", "¿Cuánto vendí esta semana?", "Ver productos relacionados"]
+            else:
+                suggestions = ["¿Qué productos tienen stock bajo?", "¿Cuáles son los más vendidos?", "¿Cuánto vendí este mes?"]
         else:
-            suggestions = ["¿Qué productos tienen stock bajo?", "¿Cuáles son los más vendidos?", "¿Cuánto vendí este mes?"]
+            suggestions = ["Ayuda", "¿Cómo agrego productos?"]
         
         return ChatResponse(
             response=response.text,
