@@ -314,9 +314,20 @@ REGLAS:
         )
         
     except Exception as e:
-        # Fallback si Gemini falla
+        error_str = str(e).lower()
+        
+        # Mensaje amigable según el tipo de error
+        if '429' in str(e) or 'quota' in error_str or 'rate' in error_str:
+            mensaje = "El servicio de IA está temporalmente saturado. Por favor, intentá de nuevo en unos minutos."
+        elif '404' in str(e) or 'not found' in error_str:
+            mensaje = "El modelo de IA no está disponible en este momento. Intentá más tarde."
+        elif 'api_key' in error_str or 'authentication' in error_str:
+            mensaje = "Hay un problema de configuración con el servicio de IA. Contactá al administrador."
+        else:
+            mensaje = "Hubo un error al procesar tu consulta. Por favor, intentá de nuevo."
+        
         return ChatResponse(
-            response=f"Lo siento, hubo un error al procesar tu consulta. Por favor intenta de nuevo. Error: {str(e)}",
+            response=mensaje,
             suggestions=["¿Qué productos tienen stock bajo?", "Ayuda"]
         )
 
