@@ -288,7 +288,7 @@ REGLAS:
 """
 
         # Llamar a Gemini
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-pro')
         
         chat_session = model.start_chat(history=[])
         
