@@ -49,8 +49,9 @@ async def get_frequent_itemsets(min_support: float = 0.1, dias: int = 90):
         
         if len(transactions) < 5:
             return {
-                "itemsets": [],
-                "mensaje": "No hay suficientes transacciones con múltiples productos"
+                "reglas": [],
+                "total_transacciones": len(transactions),
+                "mensaje": "No hay suficientes transacciones para generar reglas"
             }
         
         # Aplicar TransactionEncoder
