@@ -15,6 +15,9 @@ def get_products():
     response = supabase.table("productos").select("*").execute()
     df = pd.DataFrame(response.data)
     
+    # DEBUG: Ver qué columnas vienen
+    print("Columnas recibidas:", df.columns.tolist())
+    
     if not df.empty:
         if 'stock' not in df.columns:
             df['stock'] = 0

@@ -297,7 +297,7 @@ async def get_predictions_summary():
         for _, product in products.iterrows():
             codigo = product['codigo']
             stock = product['stock']
-            stock_minimo = product['stock_minimo']
+            stock_minimo = product.get('stock_minimo', 5)
             
             product_movements = movements[movements['codigo'] == codigo]
             salidas = product_movements[product_movements['tipo'] == 'salida']
