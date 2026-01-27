@@ -128,15 +128,18 @@ async def get_association_rules(
         recent['date'] = recent['created_at'].dt.date
         recent['transaction_id'] = recent['date'].astype(str) + '_' + recent['usuario_email'].fillna('unknown')
         
-        transactions = recent.groupby('transaction_id')['codigo'].apply(list).tolist()
-        transactions = [t for t in transactions if len(t) > 1]
-        
+        all_transactions = recent.groupby('transaction_id')['codigo'].apply(list).tolist()
+        transactions = [t for t in all_transactions if len(t) > 1]
+
         if len(transactions) < 5:
             return {
                 "reglas": [],
-                "mensaje": "No hay suficientes transacciones para generar reglas"
+                "total_transacciones": len(all_transactions),
+                "transacciones_multiples": len(transactions),
+                "total_movimientos": len(recent),
+                "mensaje": f"Se necesitan transacciones con múltiples productos. Solo {len(transactions)} de {len(all_transactions)} transacciones tienen más de 1 producto."
             }
-        
+                
         # Encodear transacciones
         te = TransactionEncoder()
         te_array = te.fit_transform(transactions)
