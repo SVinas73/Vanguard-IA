@@ -41,7 +41,9 @@ def root():
         }
     }
 
+# ✅ CAMBIO AQUÍ: Agregar soporte para HEAD
 @app.get("/health")
+@app.head("/health")  # ← Agregar esta línea
 def health_check():
     return {"status": "healthy"}
 
